@@ -41,7 +41,7 @@ import { AbstractExpressionsRenderer, IExpressionTemplateData, IInputBoxOptions,
 import { LinkDetector } from 'vs/workbench/contrib/debug/browser/linkDetector';
 import { CONTEXT_BREAK_WHEN_VALUE_CHANGES_SUPPORTED, CONTEXT_BREAK_WHEN_VALUE_IS_ACCESSED_SUPPORTED, CONTEXT_BREAK_WHEN_VALUE_IS_READ_SUPPORTED, CONTEXT_VARIABLES_FOCUSED, DebugVisualizationType, IDataBreakpointInfoResponse, IDebugService, IExpression, IScope, IStackFrame, VARIABLES_VIEW_ID } from 'vs/workbench/contrib/debug/common/debug';
 import { getContextForVariable } from 'vs/workbench/contrib/debug/common/debugContext';
-import { ErrorScope, Expression, Scope, StackFrame, Variable, getUriForDebugMemory } from 'vs/workbench/contrib/debug/common/debugModel';
+import { ErrorScope, Expression, Scope, StackFrame, Variable, VisualizedExpression, getUriForDebugMemory } from 'vs/workbench/contrib/debug/common/debugModel';
 import { DebugVisualizer, IDebugVisualizerService } from 'vs/workbench/contrib/debug/common/debugVisualizers';
 import { IEditorService, SIDE_GROUP } from 'vs/workbench/services/editor/common/editorService';
 import { IExtensionService } from 'vs/workbench/services/extensions/common/extensions';
@@ -421,7 +421,19 @@ export class VariablesRenderer extends AbstractExpressionsRenderer {
 	}
 
 	public override renderElement(node: ITreeNode<IExpression, FuzzyScore>, index: number, data: IExpressionTemplateData): void {
-		super.renderExpressionElement(node.element, node, data);
+		const vm = this.debugService.getViewModel();
+		const listen = () => {
+			data.elementDisposable.add(vm.onDidChangeVisualization(({ original, replacement }) => {
+				if (original === node.element) {
+					super.renderExpressionElement(replacement, node, data);
+					listen(); // because element disposables are cleared
+				}
+			}));
+		};
+
+		const toRender = vm.getVisualizedExpression(node.element) || node.element;
+		super.renderExpressionElement(toRender, node, data);
+		listen();
 	}
 
 	protected getInputBoxOptions(expression: IExpression): IInputBoxOptions {
@@ -466,13 +478,18 @@ export class VariablesRenderer extends AbstractExpressionsRenderer {
 		this.visualization.getApplicableFor(expression, cts.token).then(result => {
 			data.elementDisposable.add(result);
 
-			const actions = result.object.map(v => new Action('debugViz', v.name, v.iconClass || 'debug-viz-icon', undefined, this.useVisualizer(v, cts.token)));
+			const originalExpression = (expression instanceof VisualizedExpression && expression.original) || expression;
+			const actions = result.object.map(v => new Action('debugViz', v.name, v.iconClass || 'debug-viz-icon', undefined, this.useVisualizer(v, originalExpression, cts.token)));
+			if (expression instanceof VisualizedExpression) {
+				actions.push(new Action('debugViz', localize('removeVisualizer', 'None'), ThemeIcon.asClassName(Codicon.close), undefined, () => this.resetVisualizer(originalExpression)));
+			}
+
 			if (actions.length === 0) {
 				// no-op
 			} else if (actions.length === 1) {
 				actionBar.push(actions[0], { icon: true, label: false });
 			} else {
-				actionBar.push(new Action('debugViz', localize('useVisualizer', 'Visualize Variable...'), ThemeIcon.asClassName(Codicon.eye), undefined, () => this.pickVisualizer(actions, expression, data)), { icon: true, label: false });
+				actionBar.push(new Action('debugViz', localize('useVisualizer', 'Visualize Variable...'), ThemeIcon.asClassName(Codicon.eye), undefined, () => this.pickVisualizer(actions, originalExpression, data)), { icon: true, label: false });
 			}
 		});
 	}
@@ -484,7 +501,11 @@ export class VariablesRenderer extends AbstractExpressionsRenderer {
 		});
 	}
 
-	private useVisualizer(viz: DebugVisualizer, token: CancellationToken) {
+	private resetVisualizer(expression: IExpression) {
+		this.debugService.getViewModel().setVisualizedExpression(expression, undefined);
+	}
+
+	private useVisualizer(viz: DebugVisualizer, expression: IExpression, token: CancellationToken) {
 		return async () => {
 			const resolved = await viz.resolve(token);
 			if (token.isCancellationRequested) {
@@ -494,7 +515,10 @@ export class VariablesRenderer extends AbstractExpressionsRenderer {
 			if (resolved.type === DebugVisualizationType.Command) {
 				viz.execute();
 			} else {
-				throw new Error('not implemented, yet');
+				const replacement = await this.visualization.setVisualizedNodeFor(resolved.id, expression);
+				if (replacement) {
+					this.debugService.getViewModel().setVisualizedExpression(expression, replacement);
+				}
 			}
 		};
 	}

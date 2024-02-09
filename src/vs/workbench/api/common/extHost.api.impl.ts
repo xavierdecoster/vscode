@@ -1229,6 +1229,10 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 				checkProposedApiEnabled(extension, 'debugVisualization');
 				return extHostDebugService.registerDebugVisualizationProvider(extension, id, provider);
 			},
+			registerDebugVisualizationTreeProvider(provider) {
+				checkProposedApiEnabled(extension, 'debugVisualization');
+				throw new Error('not implemented');
+			},
 			onDidStartDebugSession(listener, thisArg?, disposables?) {
 				return _asExtensionEvent(extHostDebugService.onDidStartDebugSession)(listener, thisArg, disposables);
 			},
